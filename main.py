@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 # Import the new simulator functions
 from ai_analyst import generate_threat_report
@@ -18,12 +19,6 @@ from packet_analyzer import (
     db_lock
 )
 from attack_simulator import simulate_port_scan, simulate_udp_flood
-
-# 1. Initialize FastAPI App 
-app = FastAPI(
-    title="NetSentinel Backend",
-    description="Manages packet analysis, anomaly detection, and alert streaming."
-)
 
 # 2. Data Models  
 class IncidentSequenceItem(BaseModel):
@@ -55,10 +50,22 @@ class SimulationResponse(BaseModel):
     message: str
 
 # 3. Startup Event 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("--- Server Starting Up ---")
     start_sniffing()
     start_analysis_loop()
+    yield
+    print("--- Server Shutting Down ---")
+
+
+# Initialize FastAPI App 
+app = FastAPI(
+    title="NetSentinel Backend",
+    description="Manages packet analysis, alert streaming.",
+    lifespan=lifespan  
+)
+
 
 # 4. WebSocket 
 @app.websocket("/ws/live")
