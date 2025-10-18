@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 from contextlib import asynccontextmanager
+from ai_hunter import start_threat_hunter
+from attack_simulator import simulate_port_scan, simulate_udp_flood
 
 # Import the new simulator functions
 from ai_analyst import generate_threat_report
@@ -19,6 +21,8 @@ from packet_analyzer import (
     db_lock
 )
 from attack_simulator import simulate_port_scan, simulate_udp_flood
+
+blocked_ips_db = set()
 
 # 2. Data Models  
 class IncidentSequenceItem(BaseModel):
@@ -55,6 +59,7 @@ async def lifespan(app: FastAPI):
     print("--- Server Starting Up ---")
     start_sniffing()
     start_analysis_loop()
+    start_threat_hunter() 
     yield
     print("--- Server Shutting Down ---")
 
@@ -134,6 +139,23 @@ async def http_simulate_udpflood():
     """
     simulate_udp_flood()
     return {"message": "UDP flood simulation started."}
+
+@app.post("/api/mitigate/block_ip/{ip_address}", response_model=SimulationResponse)
+async def block_ip(ip_address: str):
+    """
+    Simulates blocking an IP or redirecting to a honeypot. 
+    In a real app, this would execute a firewall rule.
+    """
+    print(f"[Mitigation] ### Received request to BLOCK/HONEYPOT IP: {ip_address} ###")
+    blocked_ips_db.add(ip_address)
+    return {"message": f"IP {ip_address} has been added to the blocklist/honeypot redirect."}
+
+@app.get("/api/mitigate/blocked_ips")
+async def get_blocked_ips():
+    """
+    Returns the list of all currently blocked IPs.
+    """
+    return {"blocked_ips": sorted(list(blocked_ips_db))}
 
 # 7. Root Endpoint 
 @app.get("/")
