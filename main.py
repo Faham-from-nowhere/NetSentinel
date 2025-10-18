@@ -8,7 +8,9 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 
+# Import the AI Analyst AND Packet Analyzer 
 from ai_analyst import generate_threat_report
+from packet_analyzer import start_sniffing, start_analysis_loop, anomaly_alerts_queue
 
 # 1. Initialize FastAPI App 
 app = FastAPI(
@@ -16,7 +18,7 @@ app = FastAPI(
     description="Manages packet analysis, anomaly detection, and alert streaming."
 )
 
-# 2. Data Models (SEE This with Person B & C) 
+# 2. Data Models (Same as before) 
 class IncidentSequenceItem(BaseModel):
     timestamp: str
     type: str
@@ -28,9 +30,18 @@ class Alert(BaseModel):
     main_event: str
     status: str
     sequence: List[IncidentSequenceItem]
-    ai_summary: str  # This will hold the GenAI report
+    ai_summary: str
 
-# 3. Mock WebSocket Endpoint
+# 3. NEW: Add startup event 
+@app.on_event("startup")
+async def startup_event():
+    """
+    On server startup, start the background tasks.
+    """
+    start_sniffing()        # Start Scapy
+    start_analysis_loop()   # Start the ML analyzer
+
+# 4. WebSocket 
 @app.websocket("/ws/live")
 async def websocket_live_feed(websocket: WebSocket):
     await websocket.accept()
@@ -38,60 +49,40 @@ async def websocket_live_feed(websocket: WebSocket):
     
     try:
         while True:
-            await asyncio.sleep(5) # Wait 5 seconds
+            # Check for REAL alerts 
+            if anomaly_alerts_queue:
+                # We have a real anomaly!
+                raw_alert_data = anomaly_alerts_queue.popleft()
+                
+                print(f"--- Real Anomaly Detected: {raw_alert_data['incident_id']} ---")
 
-            # 1. Generate Fake Alert Data
-            incident_id = f"INC-{random.randint(100, 999)}"
-            score = random.randint(75, 99)
+                # 2. Call the AI Analyst (Same as before) 
+                print(f"Generating AI report for {raw_alert_data['incident_id']}...")
+                report_text = await generate_threat_report(raw_alert_data)
+                print(f"AI Report: {report_text}")
+                
+                # 3. Add the AI report to our data 
+                raw_alert_data["ai_summary"] = report_text
+                
+                # 4. Validate and send the full enriched alert 
+                full_alert = Alert(**raw_alert_data)
+                await websocket.send_json(full_alert.model_dump())
+                print(f"Sent enriched REAL alert {raw_alert_data['incident_id']}")
             
-            # This is the raw data our system "detects"
-            alert_data = {
-                "incident_id": incident_id,
-                "threat_score": score,
-                "main_event": "Potential Data Exfiltration",
-                "status": "new",
-                "sequence": [
-                    IncidentSequenceItem(
-                        timestamp=datetime.now().isoformat(),
-                        type="Port Scan",
-                        details=f"Attacker {random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)} scanned ports 1-1024."
-                    ).model_dump(),
-                    IncidentSequenceItem(
-                        timestamp=datetime.now().isoformat(),
-                        type="Connection Attempt",
-                        details="Attacker attempted RDP connection on port 3389."
-                    ).model_dump(),
-                    IncidentSequenceItem(
-                        timestamp=datetime.now().isoformat(),
-                        type="Data Outflow",
-                        details="Small but steady 5MB/min outbound traffic detected."
-                    ).model_dump()
-                ]
-            }
-
-            # 2. NEW: Call the AI Analyst 
-            print(f"Generating AI report for {incident_id}...")
-            report_text = await generate_threat_report(alert_data)
-            print(f"AI Report: {report_text}")
-            
-            # 3. NEW: Add the AI report to our data 
-            alert_data["ai_summary"] = report_text
-            
-            # 4. Validate and send the full enriched alert 
-            full_alert = Alert(**alert_data)
-            await websocket.send_json(full_alert.model_dump())
-            print(f"Sent enriched mock alert {incident_id}")
+            else:
+                # No anomaly, just wait
+                await asyncio.sleep(1) # Check the queue every second
 
     except WebSocketDisconnect:
         print("Frontend client disconnected.")
     except Exception as e:
         print(f"An error occurred: {e}")
 
-# 4. Root Endpoint for Testing 
+# 5. Root Endpoint 
 @app.get("/")
 def read_root():
     return {"status": "NetSentinel Backend is running."}
 
-# 5. Run the Server (for development) 
+# 6. Run the Server  
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

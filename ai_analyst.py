@@ -1,5 +1,5 @@
 # ai_analyst.py
-
+import random
 import os
 import google.generativeai as genai
 from dotenv import load_dotenv
