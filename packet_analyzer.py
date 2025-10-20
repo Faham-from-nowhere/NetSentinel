@@ -3,6 +3,8 @@
 import time
 import pandas as pd
 import random
+import os.path  
+import joblib   
 from collections import deque
 from scapy.all import sniff, IP, TCP, UDP
 from sklearn.ensemble import IsolationForest
@@ -13,8 +15,8 @@ from datetime import datetime
 TRAINING_PACKET_COUNT = 500
 MAX_PACKET_QUEUE_SIZE = 2000
 ANALYSIS_WINDOW_SECONDS = 10
-# How long to track an attacker's IP before creating a new incident 
-INCIDENT_COOLDOWN_SECONDS = 300 # 5 minutes
+INCIDENT_COOLDOWN_SECONDS = 300
+MODEL_FILE_PATH = "netsentinel_model.joblib"  # <-- NEW: Model save path
 
 # Global State 
 packet_queue = deque(maxlen=MAX_PACKET_QUEUE_SIZE)
@@ -24,20 +26,14 @@ model = IsolationForest(contamination=0.01)
 is_model_trained = False
 last_analysis_time = time.time()
 
-# This queue still just sends the initial alert
-anomaly_alerts_queue = deque() 
-
-# Correlation Database
-# This holds the full "story" for every incident
 incident_database = {} 
-# This is a lookup to find an active incident by attacker IP
 active_ip_to_incident = {} 
-# We need locks for our new global dicts
 db_lock = Lock()
 ip_lookup_lock = Lock()
 
+anomaly_alerts_queue = deque() 
 
-# 1. Packet Sniffing (Scapy)
+# (packet_callback and start_sniffing)
 def packet_callback(packet):
     if IP in packet:
         src_ip = packet[IP].src
@@ -72,18 +68,49 @@ def start_sniffing():
     t = Thread(target=lambda: sniff(prn=packet_callback, store=0), daemon=True)
     t.start()
 
-# 2. Anomaly Detection (Scikit-learn)
+# 2. Anomaly Detection 
+
+def try_load_model():
+    """
+    Attempts to load the pre-trained model from disk.
+    Returns True on success, False on failure.
+    """
+    global model, is_model_trained
+    if os.path.exists(MODEL_FILE_PATH):
+        try:
+            print(f"[Analyzer] Found existing model '{MODEL_FILE_PATH}'. Loading...")
+            model = joblib.load(MODEL_FILE_PATH)
+            is_model_trained = True
+            print("[Analyzer] Model loaded successfully. Switching to detection mode.")
+            return True
+        except Exception as e:
+            print(f"[Analyzer] Error loading model: {e}. Will retrain.")
+            return False
+    else:
+        print("[Analyzer] No model file found. Will train a new one.")
+        return False
 
 def analyze_traffic():
+    """
+    Main analysis loop.
+    Loads or trains model, then continuously analyzes traffic.
+    """
     global is_model_trained, last_analysis_time, model
     
     print("[Analyzer] Traffic analyzer started.")
     
-    while True:
+    # Try to load model first
+    if try_load_model():
+        # Success! Clear the queue and skip to the detection loop.
         with queue_lock:
-            current_packets = list(packet_queue)
-        
+            packet_queue.clear()
+
+    while True:
+        # Training Block 
         if not is_model_trained:
+            with queue_lock:
+                current_packets = list(packet_queue)
+            
             if len(current_packets) < TRAINING_PACKET_COUNT:
                 print(f"[Analyzer] Collecting training data... {len(current_packets)}/{TRAINING_PACKET_COUNT} packets.")
                 time.sleep(2)
@@ -94,11 +121,21 @@ def analyze_traffic():
                 features_to_train = df[['proto', 'src_port', 'dst_port', 'pkt_len']]
                 model.fit(features_to_train)
                 is_model_trained = True
+                
+                # Save the trained model
+                try:
+                    print(f"[Analyzer] Saving trained model to '{MODEL_FILE_PATH}'...")
+                    joblib.dump(model, MODEL_FILE_PATH)
+                    print("[Analyzer] Model saved.")
+                except Exception as e:
+                    print(f"[Analyzer] Error saving model: {e}")
+                
                 print("[Analyzer] Model training complete. Switching to detection mode.")
                 with queue_lock:
                     packet_queue.clear()
                 continue
-       
+        
+        # Anomaly Detection Block 
         current_time = time.time()
         if current_time - last_analysis_time < ANALYSIS_WINDOW_SECONDS:
             time.sleep(1)
@@ -122,92 +159,63 @@ def analyze_traffic():
         
         anomaly_indices = [i for i, score in enumerate(scores) if score == -1]
         
-        # Process anomalies with new correlation logic 
         if anomaly_indices:
             print(f"[Analyzer] !!! Found {len(anomaly_indices)} anomalous packets !!!")
             
             for index in anomaly_indices:
                 anomaly_packet = packets_to_analyze[index]
-                
-                # We'll use the source IP as the "attacker" key
                 attacker_ip = anomaly_packet['src_ip']
                 
-                # Create the "story" item for this specific event
                 event_data = {
                     "timestamp": datetime.fromtimestamp(anomaly_packet['timestamp']).isoformat(),
                     "type": "Anomalous Packet",
                     "details": f"Packet from {attacker_ip}:{anomaly_packet['src_port']} to {anomaly_packet['dst_ip']}:{anomaly_packet['dst_port']} (Proto: {anomaly_packet['proto']}, Size: {anomaly_packet['pkt_len']})"
                 }
                 
-                # Now, let's correlate this event
                 with ip_lookup_lock, db_lock:
-                    
-                    # Check if this IP is already part of an active incident
                     if attacker_ip in active_ip_to_incident:
                         incident_id, last_seen = active_ip_to_incident[attacker_ip]
                         
-                        # Check if it's within the cooldown window
                         if time.time() - last_seen < INCIDENT_COOLDOWN_SECONDS:
-                            # EXISTING INCIDENT
                             print(f"[Analyzer] Correlating event with existing incident {incident_id}")
-                            
-                            # Add this event to the story
                             incident_database[incident_id]['sequence'].append(event_data)
-                            # Update the incident's threat score and timestamp
                             incident_database[incident_id]['threat_score'] = min(100, incident_database[incident_id]['threat_score'] + 5)
                             incident_database[incident_id]['last_seen'] = time.time()
-                            
-                            # Update the IP lookup timestamp
                             active_ip_to_incident[attacker_ip] = (incident_id, time.time())
-                            
-                            # We DON'T send a new WebSocket alert. The frontend already knows.
-                            
                         else:
-                            # COOLDOWN EXPIRED, NEW INCIDENT 
                             print(f"[Analyzer] Cooldown expired for {attacker_ip}. Creating new incident.")
                             create_new_incident(attacker_ip, event_data)
-                    
                     else:
                         print(f"[Analyzer] New attacker IP {attacker_ip}. Creating new incident.")
                         create_new_incident(attacker_ip, event_data)
 
-# Helper function to create new incidents 
+
 def create_new_incident(attacker_ip, first_event):
-    """
-    Handles the logic for creating a new incident entry.
-    This MUST be called from within the locked block.
-    """
     incident_id = f"INC-REAL-{random.randint(1000, 9999)}"
     current_time = time.time()
     
-    # This is the full incident data
     new_incident = {
         "incident_id": incident_id,
-        "threat_score": 90, # Start high
+        "threat_score": 90,
         "main_event": "ML Anomaly Detected",
         "status": "new",
         "first_seen": current_time,
         "last_seen": current_time,
         "attacker_ip": attacker_ip,
-        "sequence": [first_event] # Add the first event
-        # ai_summary will be added in main.py
+        "sequence": [first_event]
     }
     
-    # Add to our databases
     incident_database[incident_id] = new_incident
     active_ip_to_incident[attacker_ip] = (incident_id, current_time)
     
-    # This is the initial alert we send to the frontend.
-    # Note: We send a copy, without the full sequence to keep it light.
     initial_alert_data = {
         "incident_id": incident_id,
         "threat_score": new_incident['threat_score'],
         "main_event": new_incident['main_event'],
         "status": new_incident['status'],
-        "sequence": [first_event] # Send just the first event as a preview
+        "sequence": [first_event]
     }
     
-    # Add to the WebSocket queue
     anomaly_alerts_queue.append(initial_alert_data)
 
 def start_analysis_loop():
