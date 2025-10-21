@@ -58,23 +58,27 @@ class SimulationResponse(BaseModel):
 def send_desktop_notification(alert: Alert):
     """
     Sends a desktop toast notification using plyer.
-    Note: This is a synchronous function, called via asyncio.to_thread.
+    Truncates the message if it's too long for Windows.
     """
     try:
         title = f"🚨 NetSentinel Alert: {alert.main_event} ({alert.threat_score}/100)"
         # Get just the summary part of the AI report before the MITRE details
         message_summary = alert.ai_summary.split("---")[0].strip()
-        
+
+        # Truncate message for Windows limit
+        max_len = 250 # Be safe, leave a little buffer under 256
+        if len(message_summary) > max_len:
+            message_summary = message_summary[:max_len] + "..."
+
         notification.notify(
             title=title,
-            message=message_summary,
+            message=message_summary, # Pass the potentially truncated message
             app_name="NetSentinel",
-            timeout=15  # Notification stays for 15 seconds
-            # app_icon='path/to/icon.ico' # Optional: Add an icon
+            timeout=15
+            # app_icon='path/to/icon.ico'
         )
         print(f"[Desktop Notifier] Sent notification for {alert.incident_id}")
     except Exception as e:
-        # Plyer can sometimes fail depending on the OS/environment
         print(f"[Desktop Notifier] Error sending notification: {e}")
 
 
