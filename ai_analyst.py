@@ -84,3 +84,74 @@ async def generate_threat_report(alert_data: dict) -> str:
     except Exception as e:
         print(f"[AI Analyst Error]: {e}")
         return "AI analysis failed. Please review raw data."
+
+
+async def generate_incident_playbook(alert_data: dict, ai_summary: str) -> str:
+    """
+    Generates a step-by-step incident response playbook using the AI.
+    Takes the original alert data and the already-generated AI summary as input.
+    """
+    # Extract key details for the prompt
+    attacker_ip = alert_data.get('attacker_ip', 'Unknown')
+    victim_ip = "Internal Host"
+    victim_port = ""
+    mitre_tactic = "Unknown"
+    mitre_technique = "Unknown"
+
+    try:
+        # Try to parse victim IP/Port from the first event
+        details = alert_data['sequence'][0]['details']
+        if 'to' in details:
+            victim_str = details.split('to ')[1].split(' (')[0]
+            if ':' in victim_str: victim_ip, victim_port = victim_str.split(':')
+            else: victim_ip = victim_str
+        
+        # Try to parse MITRE info from the summary (split by '---')
+        if "---" in ai_summary:
+            mitre_section = ai_summary.split("---")[1]
+            if "Tactic:" in mitre_section: mitre_tactic = mitre_section.split("Tactic:")[1].split("\n")[0].strip()
+            if "Technique:" in mitre_section: mitre_technique = mitre_section.split("Technique:")[1].split("\n")[0].strip()
+            
+    except Exception as e:
+        print(f"[AI Playbook Parser] Minor error parsing details: {e}")
+        pass # Stick with defaults if parsing fails
+
+    playbook_prompt = f"""
+    You are 'NetSentinel Responder,' an expert incident response (IR) lead AI.
+    An incident has been detected with the following details:
+
+    **Incident Summary:**
+    {ai_summary.split("---")[0].strip()} # Only the summary part
+
+    **Key Details:**
+    - Incident ID: {alert_data['incident_id']}
+    - Threat Score: {alert_data['threat_score']}
+    - Primary Attacker IP: {attacker_ip}
+    - Primary Target: {victim_ip} {f"(Port: {victim_port})" if victim_port else ""}
+    - MITRE Tactic: {mitre_tactic}
+    - MITRE Technique: {mitre_technique}
+
+    **YOUR TASK:**
+    Generate a concise, step-by-step incident response playbook (3-5 numbered steps max) suitable for a system administrator. Focus on immediate actions for:
+    1.  **Containment:** Stop the bleeding. Isolate affected systems. Block malicious IPs/Domains.
+    2.  **Eradication:** Remove the threat actor/malware.
+    3.  **Verification:** Confirm the threat is gone and systems are clean.
+
+    **Format:** Use markdown numbered list. Be clear and direct.
+
+    **Example Playbook:**
+    1.  **Isolate Host:** Immediately remove host {victim_ip} from the network (unplug cable or disable network interface).
+    2.  **Block Attacker:** Add a firewall rule to block all inbound and outbound traffic from/to IP address {attacker_ip}.
+    3.  **Analyze & Clean:** Perform a full malware scan and forensic analysis on the isolated host {victim_ip}. Reimage if necessary.
+    4.  **Monitor:** Closely monitor network traffic for any further signs of communication attempts from {attacker_ip} or similar activity from {victim_ip}.
+    """
+
+    try:
+        print(f"[AI Playbook] Generating playbook for {alert_data['incident_id']}...")
+        response = await model.generate_content_async(playbook_prompt)
+        playbook_text = response.text.strip()
+        print(f"[AI Playbook] Playbook generated successfully.")
+        return playbook_text
+    except Exception as e:
+        print(f"[AI Playbook] Error generating playbook: {e}")
+        return "Failed to generate incident response playbook."

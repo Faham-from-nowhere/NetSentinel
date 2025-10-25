@@ -10,6 +10,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from plyer import notification
 from ai_hunter import start_threat_hunter 
+from ai_analyst import generate_threat_report, generate_incident_playbook
 
 # Existing Imports 
 from ai_analyst import generate_threat_report
@@ -50,6 +51,7 @@ class FullIncident(BaseModel):
     attacker_ip: str
     sequence: List[IncidentSequenceItem]
     ai_summary: Optional[str] = None
+    ai_playbook: Optional[str] = None
 
 class SimulationResponse(BaseModel):
     message: str
@@ -112,6 +114,17 @@ async def alert_processor_task():
                     
             # 4. Validate and create the full Alert object
             full_alert = Alert(**initial_alert_data)
+
+            if full_alert.threat_score >= 85: # Threshold for generating playbook
+                try:
+                    playbook_text = await generate_incident_playbook(initial_alert_data, full_alert.ai_summary)
+                # Store playbook in the main database
+                    with db_lock:
+                        if incident_id in incident_database:
+                           incident_database[incident_id]['ai_playbook'] = playbook_text
+
+                except Exception as e:
+                    print(f"[Alert Processor] Error during playbook generation: {e}")
             
             # 5. Fan out to subscribers
             await websocket_queue.put(full_alert)
