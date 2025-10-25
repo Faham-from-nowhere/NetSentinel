@@ -1,7 +1,6 @@
 // src/app/dashboard/page.tsx
 "use client";
 
-import React from "react";
 import ThreatAnalysisDashboard from "@/components/ThreatAnalysisDashboard";
 
 export default function DashboardPage() {

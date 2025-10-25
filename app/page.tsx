@@ -15,7 +15,7 @@ export default function LandingPage() {
         See Threats Before They Strike
       </h1>
       <p className="text-white/85 text-base sm:text-lg md:text-xl max-w-2xl mt-6 mb-10">
-        NetSentinel uses AI-powered anomaly detection and real-time narrative intelligence to transform raw network traffic into actionable security insights—before data is lost.
+        NetSentinel uses AI-powered anomaly detection and real-time narrative intelligence to transform raw network traffic into actionable security insights.
       </p>
       <div className="flex flex-col sm:flex-row items-center gap-4">
         <Link
