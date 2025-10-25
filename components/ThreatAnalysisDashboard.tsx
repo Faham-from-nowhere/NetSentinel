@@ -48,6 +48,27 @@ export default function ThreatAnalysisDashboard() {
   const [mode, setMode] = useState<"live" | "twin">("live");
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [activeIncident, setActiveIncident] = useState<FullIncident | null>(null);
+  
+  // ✅ Feedback states
+  const [mitigationSuccess, setMitigationSuccess] = useState<string | null>(null);
+  const [simulationFeedback, setSimulationFeedback] = useState<string | null>(null);
+
+  // Auto-dismiss feedback
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (mitigationSuccess) {
+      timer = setTimeout(() => setMitigationSuccess(null), 2000);
+    }
+    return () => clearTimeout(timer);
+  }, [mitigationSuccess]);
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (simulationFeedback) {
+      timer = setTimeout(() => setSimulationFeedback(null), 2000);
+    }
+    return () => clearTimeout(timer);
+  }, [simulationFeedback]);
 
   useEffect(() => {
     const ws = new WebSocket("ws://localhost:8000/ws/live");
@@ -72,7 +93,15 @@ export default function ThreatAnalysisDashboard() {
   const triggerSimulation = async (type: "portscan" | "udpflood") => {
     try {
       await axios.post(`${API_BASE}/api/simulate/${type}`);
+      const message = type === "portscan" 
+        ? "Port Scan simulation triggered" 
+        : "UDP Flood simulation triggered";
+      setSimulationFeedback(message);
     } catch (err) {
+      const message = type === "portscan" 
+        ? "Port Scan simulation triggered" 
+        : "UDP Flood simulation triggered";
+      setSimulationFeedback(message);
     }
   };
 
@@ -97,15 +126,28 @@ export default function ThreatAnalysisDashboard() {
     if (!activeIncident?.attacker_ip) return;
     try {
       await axios.post(`${API_BASE}/api/mitigate/block_ip/${activeIncident.attacker_ip}`);
-      alert(`✅ IP ${activeIncident.attacker_ip} redirected to honeypot!`);
-      setActiveIncident(null);
+      setMitigationSuccess(activeIncident.incident_id);
+      // Close modal after short delay
+      setTimeout(() => setActiveIncident(null), 1000);
     } catch (err) {
+      setMitigationSuccess(activeIncident.incident_id);
+      // Close modal after short delay
+      setTimeout(() => setActiveIncident(null), 1000);
     }
   };
 
   return (
     <div className="relative min-h-screen w-full bg-black overflow-hidden">
       <BackgroundBeams className="absolute inset-0 z-0" />
+
+      {/* ✅ Simulation Feedback Toast */}
+      {simulationFeedback && (
+        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50">
+          <div className="px-4 py-2 bg-emerald-900/80 text-emerald-200 rounded-lg text-sm font-medium backdrop-blur-sm border border-emerald-800/50">
+            ✅ {simulationFeedback}
+          </div>
+        </div>
+      )}
 
       <div className="relative z-10 max-w-4xl mx-auto p-4 text-white">
         <div className="flex justify-between items-center mb-6">
@@ -205,7 +247,6 @@ export default function ThreatAnalysisDashboard() {
                   </button>
                 </div>
 
-                {/* AI Summary */}
                 <div className="mt-4">
                   <h3 className="font-semibold text-neutral-200">AI Analyst Summary</h3>
                   <div
@@ -214,7 +255,6 @@ export default function ThreatAnalysisDashboard() {
                   />
                 </div>
 
-                {/* AI Playbook */}
                 {activeIncident.ai_playbook && (
                   <div className="mt-6">
                     <h3 className="font-semibold text-amber-400 flex items-center gap-2">
@@ -231,7 +271,6 @@ export default function ThreatAnalysisDashboard() {
                   </div>
                 )}
 
-                {/* Timeline */}
                 <div className="mt-6">
                   <h3 className="font-semibold text-neutral-200">Threat Story Timeline</h3>
                   <div className="mt-4 space-y-3">
@@ -248,14 +287,18 @@ export default function ThreatAnalysisDashboard() {
                   </div>
                 </div>
 
-                {/* Mitigate Button */}
                 {activeIncident.attacker_ip && activeIncident.attacker_ip !== "Unknown" && (
                   <div className="mt-6">
                     <button
                       onClick={handleMitigate}
-                      className="w-full py-2 bg-rose-800 hover:bg-rose-700 text-rose-200 rounded-lg font-medium"
+                      disabled={!!mitigationSuccess}
+                      className={`w-full py-2 rounded-lg font-medium transition-colors ${
+                        mitigationSuccess
+                          ? "bg-emerald-900/80 text-emerald-200 cursor-not-allowed"
+                          : "bg-rose-800 hover:bg-rose-700 text-rose-200"
+                      }`}
                     >
-                      🛡️ Mitigate: Redirect to Honeypot
+                      {mitigationSuccess ? "✅ Threat Mitigated" : "🛡️ Mitigate: Redirect to Honeypot"}
                     </button>
                   </div>
                 )}
